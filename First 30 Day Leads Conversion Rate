@@ -1,0 +1,12 @@
+select
+      l.created_at::date as date
+      , count(case when datediff('day',l.created_at,l.converted_at)=0 then null else l.id end ) as "# Free Users (Day 0) Less same day conversions"
+      , count(case when d.medium like ('%email%') and datediff('day',l.created_at,l.converted_at)=0 then d.user_id else null end ) as "Day 0 email converted"
+      , count(case when d.medium like ('%email%') and datediff('day',l.created_at,l.converted_at) between 0 and 1 then d.user_id else null end ) as "Day 1 email converted"
+      , count(case when d.medium like ('%email%') and datediff('day',l.created_at,l.converted_at) between 0 and 7 then d.user_id else null end ) as "Day 7 email converted"
+      , count(case when d.medium like ('%email%') and datediff('day',l.created_at,l.converted_at) between 0 and 30 then d.user_id else null end ) as "Day 30 email converted"
+
+from FIVETRAN.OPDB_PUBLIC.LEADS l
+left join FRESHLY.ACQUSITION_DM.ATTRIBUTION_DAILY d on d.user_id=l.user_id and d.is_first_for_user=1
+group by 1
+order by 1 desc
