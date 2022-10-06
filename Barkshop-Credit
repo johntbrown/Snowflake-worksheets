@@ -1,0 +1,10 @@
+select c.coupon_id,
+u.email,
+c.coupon_redeemable_id,
+c.coupon_redeemable_type,
+c.created_at,
+c.updated_at
+from box_appdb_dms.couponable_coupon_redemptions as c
+left join box_appdb_dms.users as u
+on c.user_id = u.id
+where c.coupon_id = 60574786
