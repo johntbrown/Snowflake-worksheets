@@ -1,0 +1,363 @@
+Churn Breakdown by Admin Label (WF and All)	Cancel by Admin vs. Customer Count
+"with user_sub_status as
+-- gets all play subs for Wealthy Family users and provides sub count and active sub count by user
+(SELECT
+    clustercategory,
+    user_id,
+    email,
+    subscription_id,
+    subscription_state,
+    subscription_expires_at,
+    subscription_created_at,
+    COUNT(subscription_id) OVER (PARTITION BY user_id) as user_sub_count,
+    SUM(CASE WHEN subscription_state = 'active' THEN 1 ELSE 0 END) OVER (PARTITION BY user_id) as user_active_sub_count
+FROM data_mart.user_clusters
+LEFT JOIN common.onebark_subscriptions
+    ON user_clusters.user_id = onebark_subscriptions.box_user_id
+WHERE source = 'barkbox'
+-- AND clustercategory = 'Cluster 3'
+)
+
+, churn_data as
+(SELECT
+    subscription_id,
+    user_id,
+    max(churn_date) OVER (PARTITION BY subscription_id) as most_recent_churn_date,
+    churn_type,
+    churn_date,
+    expires_at,
+    cancellation,
+    termination,
+    dunning,
+    cancel_reason_alias,
+    cancel_reason2_alias,
+    cancel_by_customer,
+    cancel_by_admin,
+    current_row
+FROM common.churn_data_historical
+WHERE current_row = 1
+)
+
+, cancelled_subs_wf as
+(SELECT
+    subscription_id,
+    box_user_id,
+    subscription_source_pk,
+    email,
+    subscription_cancelled_at,
+    replace(reasons,' ','') as reasons,
+    cancellation_number,
+    clustercategory,
+    RANK() OVER (PARTITION BY subscription_id ORDER BY cancellation_number DESC) as cancel_nbr_reverse
+FROM common.onebark_subscription_cancellations
+INNER JOIN data_mart.user_clusters
+    ON user_clusters.user_id = onebark_subscription_cancellations.box_user_id
+WHERE LEFT(subscription_source_pk,7) ILIKE 'barkbox%'
+-- AND clustercategory = 'Cluster 3'
+)
+
+, last_cancelled_sub_wf as
+-- gets most recent cancellation for a subscription
+(SELECT
+     *
+FROM cancelled_subs_wf
+WHERE cancel_nbr_reverse = 1
+)
+
+, end_commit_reason_groups as
+(SELECT distinct
+     r.id as reason_id,
+     r.alias as reason_alias,
+     admin_label,
+     customer_label,
+     rc.name as category_name,
+     active,
+     display_type from box_appdb.reasons r
+LEFT JOIN box_appdb.reason_displays rd
+    ON rd.reason_id =r.id
+LEFT JOIN box_appdb.reason_categories rc
+    ON rc.id = r.category_id
+WHERE display_type in ('end_commitment')
+)
+
+, all_sub_cancel_reasons as
+(SELECT
+    user_sub_status.user_id,
+    user_sub_status.clustercategory,
+    user_sub_status.email,
+    user_sub_status.subscription_id,
+    user_sub_status.subscription_state,
+    user_sub_status.subscription_expires_at,
+    user_sub_status.subscription_created_at,
+    user_sub_status.user_sub_count,
+    user_sub_status.user_active_sub_count,
+    churn_date,
+    expires_at,
+    cancellation,
+    termination,
+    dunning,
+    cancel_by_customer,
+    cancel_by_admin,
+    CASE
+        WHEN reasons IS NULL AND cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL THEN 0
+        WHEN reasons IS NOT NULL AND cancel_reason_alias IS NULL AND cancel_reason_alias IS NULL THEN len(reasons) - len(replace(reasons,',','')) + 1
+        WHEN cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NOT NULL THEN 2
+        WHEN (cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NULL) OR (cancel_reason2_alias IS NOT NULL AND cancel_reason_alias IS NULL) THEN 1
+        END as reason_count,
+    CASE
+        WHEN cancel_reason_alias IS NOT NULL THEN cancel_reason_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NOT NULL THEN cancel_reason2_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count = 1 THEN reasons
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count > 1 THEN split_part(reasons,',',1)
+        END as cancel_reason_1,
+    CASE
+        WHEN cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NOT NULL THEN cancel_reason2_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count <= 1 THEN NULL
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count >= 2 THEN split_part(reasons,',',2)
+        END as cancel_reason_2,
+    CASE
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count <= 2 THEN NULL
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count >= 3 THEN split_part(reasons,',',3)
+        END as cancel_reason_3,
+    row_number() OVER (PARTITION BY user_sub_status.user_id ORDER BY user_sub_status.subscription_expires_at DESC, user_sub_status.subscription_created_at DESC,user_sub_status.subscription_id) as sub_number
+FROM user_sub_status
+LEFT JOIN churn_data
+    ON user_sub_status.subscription_id = churn_data.subscription_id
+    AND user_sub_status.user_id = churn_data.user_id
+LEFT JOIN last_cancelled_sub_wf
+    ON user_sub_status.user_id = last_cancelled_sub_wf.box_user_id
+    AND user_sub_status.subscription_id = last_cancelled_sub_wf.subscription_id
+WHERE user_active_sub_count = 0
+)
+
+, most_recent_sub_and_cancel_cat as
+(SELECT
+    all_sub_cancel_reasons.*,
+    lower(replace(coalesce(cancel_1.admin_label, cancel_1.customer_label,cancel_1.category_name, cancel_reason_1),'.','')) as reason1_label,
+    lower(replace(coalesce(cancel_2.admin_label, cancel_2.customer_label,cancel_2.category_name, cancel_reason_2),'.','')) as reason2_label,
+    lower(replace(coalesce(cancel_3.admin_label, cancel_3.customer_label,cancel_3.category_name, cancel_reason_3),'.','')) as reason3_label,
+    CASE
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NULL AND reason3_label IS NULL THEN reason1_label
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NULL AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NULL AND reason1_label = reason2_label THEN reason1_label
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label != reason2_label AND reason1_label !=reason3_label AND reason2_label != reason3_label THEN concat(reason1_label,concat(', ',concat(reason2_label,concat(', ',(reason3_label)))))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label = reason2_label AND reason1_label != reason3_label THEN concat(reason1_label,concat(', ',reason3_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label = reason3_label AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason2_label = reason3_label AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason2_label = reason3_label AND reason1_label != reason3_label THEN concat(reason1_label,concat(', ',reason3_label))
+        ELSE NULL
+        END as all_reason_labels
+FROM all_sub_cancel_reasons
+LEFT JOIN end_commit_reason_groups cancel_1
+    ON all_sub_cancel_reasons.cancel_reason_1 = cancel_1.reason_alias
+LEFT JOIN end_commit_reason_groups cancel_2
+    ON all_sub_cancel_reasons.cancel_reason_2 = cancel_2.reason_alias
+LEFT JOIN end_commit_reason_groups cancel_3
+    ON all_sub_cancel_reasons.cancel_reason_3 = cancel_3.reason_alias
+WHERE sub_number = 1
+)
+
+
+SELECT
+--     reason2_label,
+--     reason1_label,
+    reason3_label,
+--     all_reason_labels,
+    count(1)
+FROM most_recent_sub_and_cancel_cat
+WHERE subscription_expires_at < '2022-11-01'
+AND subscription_expires_at >= '2021-11-01'
+-- AND all_reason_labels IS NULL
+GROUP BY 1
+ORDER BY 2 DESC
+
+
+
+
+
+
+"	"with user_sub_status as
+-- gets all play subs for Wealthy Family users and provides sub count and active sub count by user
+(SELECT
+    clustercategory,
+    user_id,
+    email,
+    subscription_id,
+    subscription_state,
+    subscription_expires_at,
+    subscription_created_at,
+    COUNT(subscription_id) OVER (PARTITION BY user_id) as user_sub_count,
+    SUM(CASE WHEN subscription_state = 'active' THEN 1 ELSE 0 END) OVER (PARTITION BY user_id) as user_active_sub_count
+FROM data_mart.user_clusters
+LEFT JOIN common.onebark_subscriptions
+    ON user_clusters.user_id = onebark_subscriptions.box_user_id
+WHERE source = 'barkbox'
+AND clustercategory = 'Cluster 3'
+)
+
+, churn_data as
+(SELECT
+    subscription_id,
+    user_id,
+    max(churn_date) OVER (PARTITION BY subscription_id) as most_recent_churn_date,
+    churn_type,
+    churn_date,
+    expires_at,
+    cancellation,
+    termination,
+    dunning,
+    cancel_reason_alias,
+    cancel_reason2_alias,
+    cancel_by_customer,
+    cancel_by_admin,
+    current_row
+FROM common.churn_data_historical
+WHERE current_row = 1
+)
+
+, cancelled_subs_wf as
+(SELECT
+    subscription_id,
+    box_user_id,
+    subscription_source_pk,
+    email,
+    subscription_cancelled_at,
+    replace(reasons,' ','') as reasons,
+    cancellation_number,
+    clustercategory,
+    RANK() OVER (PARTITION BY subscription_id ORDER BY cancellation_number DESC) as cancel_nbr_reverse
+FROM common.onebark_subscription_cancellations
+INNER JOIN data_mart.user_clusters
+    ON user_clusters.user_id = onebark_subscription_cancellations.box_user_id
+WHERE LEFT(subscription_source_pk,7) ILIKE 'barkbox%'
+AND clustercategory = 'Cluster 3'
+)
+
+, last_cancelled_sub_wf as
+-- gets most recent cancellation for a subscription
+(SELECT
+     *
+FROM cancelled_subs_wf
+WHERE cancel_nbr_reverse = 1
+)
+
+, end_commit_reason_groups as
+(SELECT distinct
+     r.id as reason_id,
+     r.alias as reason_alias,
+     admin_label,
+     customer_label,
+     rc.name as category_name,
+     active,
+     display_type from box_appdb.reasons r
+LEFT JOIN box_appdb.reason_displays rd
+    ON rd.reason_id =r.id
+LEFT JOIN box_appdb.reason_categories rc
+    ON rc.id = r.category_id
+WHERE display_type in ('end_commitment')
+)
+
+, all_sub_cancel_reasons as
+(SELECT
+    user_sub_status.user_id,
+    user_sub_status.clustercategory,
+    user_sub_status.email,
+    user_sub_status.subscription_id,
+    user_sub_status.subscription_state,
+    user_sub_status.subscription_expires_at,
+    user_sub_status.subscription_created_at,
+    user_sub_status.user_sub_count,
+    user_sub_status.user_active_sub_count,
+    churn_date,
+    expires_at,
+    cancellation,
+    termination,
+    dunning,
+    cancel_by_customer,
+    cancel_by_admin,
+    CASE
+        WHEN reasons IS NULL AND cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL THEN 0
+        WHEN reasons IS NOT NULL AND cancel_reason_alias IS NULL AND cancel_reason_alias IS NULL THEN len(reasons) - len(replace(reasons,',','')) + 1
+        WHEN cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NOT NULL THEN 2
+        WHEN (cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NULL) OR (cancel_reason2_alias IS NOT NULL AND cancel_reason_alias IS NULL) THEN 1
+        END as reason_count,
+    CASE
+        WHEN cancel_reason_alias IS NOT NULL THEN cancel_reason_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NOT NULL THEN cancel_reason2_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count = 1 THEN reasons
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count > 1 THEN split_part(reasons,',',1)
+        END as cancel_reason_1,
+    CASE
+        WHEN cancel_reason_alias IS NOT NULL AND cancel_reason2_alias IS NOT NULL THEN cancel_reason2_alias
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count <= 1 THEN NULL
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count >= 2 THEN split_part(reasons,',',2)
+        END as cancel_reason_2,
+    CASE
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count <= 2 THEN NULL
+        WHEN cancel_reason_alias IS NULL AND cancel_reason2_alias IS NULL AND reasons IS NOT NULL AND reason_count >= 3 THEN split_part(reasons,',',3)
+        END as cancel_reason_3,
+    row_number() OVER (PARTITION BY user_sub_status.user_id ORDER BY user_sub_status.subscription_expires_at DESC, user_sub_status.subscription_created_at DESC,user_sub_status.subscription_id) as sub_number
+FROM user_sub_status
+LEFT JOIN churn_data
+    ON user_sub_status.subscription_id = churn_data.subscription_id
+    AND user_sub_status.user_id = churn_data.user_id
+LEFT JOIN last_cancelled_sub_wf
+    ON user_sub_status.user_id = last_cancelled_sub_wf.box_user_id
+    AND user_sub_status.subscription_id = last_cancelled_sub_wf.subscription_id
+WHERE user_active_sub_count = 0
+)
+
+, most_recent_sub_and_cancel_cat as
+(SELECT
+    all_sub_cancel_reasons.*,
+    lower(replace(coalesce(cancel_1.admin_label, cancel_1.customer_label,cancel_1.category_name, cancel_reason_1),'.','')) as reason1_label,
+    lower(replace(coalesce(cancel_2.admin_label, cancel_2.customer_label,cancel_2.category_name, cancel_reason_2),'.','')) as reason2_label,
+    lower(replace(coalesce(cancel_3.admin_label, cancel_3.customer_label,cancel_3.category_name, cancel_reason_3),'.','')) as reason3_label,
+    CASE
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NULL AND reason3_label IS NULL THEN reason1_label
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NULL AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NULL AND reason1_label = reason2_label THEN reason1_label
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label != reason2_label AND reason1_label !=reason3_label AND reason2_label != reason3_label THEN concat(reason1_label,concat(', ',concat(reason2_label,concat(', ',(reason3_label)))))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label = reason2_label AND reason1_label != reason3_label THEN concat(reason1_label,concat(', ',reason3_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason1_label = reason3_label AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason2_label = reason3_label AND reason1_label != reason2_label THEN concat(reason1_label,concat(', ',reason2_label))
+        WHEN reason1_label IS NOT NULL AND reason2_label IS NOT NULL AND reason3_label IS NOT NULL AND reason2_label = reason3_label AND reason1_label != reason3_label THEN concat(reason1_label,concat(', ',reason3_label))
+        ELSE NULL
+        END as all_reason_labels
+FROM all_sub_cancel_reasons
+LEFT JOIN end_commit_reason_groups cancel_1
+    ON all_sub_cancel_reasons.cancel_reason_1 = cancel_1.reason_alias
+LEFT JOIN end_commit_reason_groups cancel_2
+    ON all_sub_cancel_reasons.cancel_reason_2 = cancel_2.reason_alias
+LEFT JOIN end_commit_reason_groups cancel_3
+    ON all_sub_cancel_reasons.cancel_reason_3 = cancel_3.reason_alias
+WHERE sub_number = 1
+)
+
+
+SELECT
+--     reason2_label,
+--     reason1_label,
+--     reason3_label,
+--     all_reason_labels,
+    count(1),
+    SUM(CASE WHEN cancel_by_admin = TRUE AND (cancel_by_customer = FALSE OR cancel_by_customer IS NULL) THEN 1 ELSE 0 END) as cancel_by_admin_count,
+    SUM(CASE WHEN cancel_by_customer = TRUE AND (cancel_by_admin = FALSE OR cancel_by_admin IS NULL) THEN 1 ELSE 0 END) as cancel_by_customer_count,
+    SUM(CASE WHEN cancel_by_customer = TRUE AND cancel_by_admin = TRUE THEN 1 ELSE 0 END) as both_cancel_count,
+    SUM(CASE WHEN cancel_by_customer = FALSE AND cancel_by_admin = FALSE THEN 1 ELSE 0 END) as neither_cancel_count,
+    SUM(CASE WHEN cancel_by_customer IS NULL AND cancel_by_admin IS NULL THEN 1 ELSE 0 END) as null_cancel_count,
+    SUM(CASE WHEN termination = TRUE THEN 1 ELSE 0 END) as termination_count,
+    SUM(CASE WHEN cancellation = TRUE THEN 1 ELSE 0 END) as cancellation_count,
+    SUM(CASE WHEN dunning = TRUE THEN 1 ELSE 0 END) as dunning_count
+FROM most_recent_sub_and_cancel_cat
+WHERE subscription_expires_at < '2022-11-01'
+AND subscription_expires_at >= '2022-08-01'
+-- AND all_reason_labels IS NULL
+-- GROUP BY 1
+-- ORDER BY 2 DESC
+
+
+
+
+
+"
