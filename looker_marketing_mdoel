@@ -1,0 +1,32 @@
+connection: "snowflake"
+
+include: "/marketing_views/*.view.lkml"                # include all views in the views/ folder in this project
+
+explore: weekly_report_data {}
+
+explore: drift_marketing_spend {}
+
+explore: tiktok_stats {
+  group_label: "Marketing"
+  label: "Tiktok Stats"
+}
+
+explore: facebook_and_instagram_stats_by_campaign {
+  group_label: "Marketing"
+  label: "Facebook&Insta stats"
+}
+
+explore: adwords_stats_by_campaigns {
+  group_label: "Marketing"
+  label: "Adwords stats"
+}
+
+explore: marketing_costs {
+  group_label: "Marketing"
+  label: "Marketing costs"
+}
+
+explore: influencers_posts {
+  group_label: "Marketing"
+  label: "Influencers posts"
+}
