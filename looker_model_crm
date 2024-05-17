@@ -1,0 +1,284 @@
+connection: "snowflake"
+
+include: "*.view.lkml"
+include: "*.dashboard.lookml"  # include all dashboards in this project
+include: "/finance_views/*.view.lkml"
+include: "/views/user/dim_user.view.lkml"
+include: "/views/product/dim_trading_item.view.lkml"
+include: "/views/order/order_details.view.lkml"
+
+explore: item_journal {
+  group_label: "Finance V2"
+  view_label: "Item journal"
+  label: "Item journal"
+  description: "Item journal"
+
+  join: m_order_shipping_address {
+    view_label: "Shipping Address"
+    type: left_outer
+    sql_on: ${item_journal.order_id} = ${m_order_shipping_address.order_id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: deferred_revenue {
+  group_label: "Finance V2"
+  view_label: "Deferred revenue"
+  label: "Deferred revenue"
+  description: "Deferred revenue"
+
+  join: address {
+    view_label: "Cashbird Address"
+    type: left_outer
+    sql_on: ${deferred_revenue.address_id} = ${address.id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: deferred_revenue_ecommerce_summary {
+  group_label: "Finance V2"
+  view_label: "Deferred revenue summary (Ecommerce)"
+  label: "Deferred revenue summary (Ecommerce)"
+  description: "Deferred revenue summary (Ecommerce)"
+
+  join: address {
+    view_label: "Cashbird Address"
+    type: left_outer
+    sql_on: ${deferred_revenue_ecommerce_summary.address_id} = ${address.id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: deferred_revenue_gift_cards {
+  group_label: "Finance V2"
+  view_label: "Deferred revenue gift cards"
+  label: "Deferred revenue gift cards"
+  description: "Deferred revenue gift cards"
+}
+
+explore: product_reconcilement {
+  group_label: "Finance V2"
+  view_label: "Product reconcilement statistics"
+  label: "Product reconcilement"
+  description: "Product reconcilement statistics"
+
+  join: m_order_shipping_address {
+    view_label: "Shipping Address"
+    type: left_outer
+    sql_on: ${product_reconcilement.order_id} = ${m_order_shipping_address.order_id} ;;
+    relationship: one_to_one
+  }
+
+  join: order_details {
+    view_label: "Order Item"
+    type: left_outer
+    sql_on: ${product_reconcilement.order_details_id} = ${order_details.id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: qb_entry_revenue {
+  group_label: "Finance V2"
+  view_label: "QB Entry Revenue"
+  label: "QB Entry Revenue"
+  description: "QB Entry Revenue"
+
+  join: m_order_shipping_address {
+    view_label: "Shipping Address"
+    type: left_outer
+    sql_on: ${qb_entry_revenue.order_id} = ${m_order_shipping_address.order_id} ;;
+    relationship: one_to_one
+  }
+
+  join: order_details {
+    view_label: "Order Item"
+    type: left_outer
+    sql_on: ${qb_entry_revenue.order_details_id} = ${order_details.id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: qb_entry_shipping_revenue {
+  group_label: "Finance V2"
+  view_label: "QB Entry Shipping Revenue"
+  label: "QB EntryShipping  Revenue"
+  description: "QB Entry Shipping Revenue"
+
+  join: m_order_shipping_address {
+    view_label: "Shipping Address"
+    type: left_outer
+    sql_on: ${qb_entry_shipping_revenue.order_id} = ${m_order_shipping_address.order_id} ;;
+    relationship: one_to_one
+  }
+}
+
+explore: charge {
+  group_label: "Finance V2"
+  view_label: "Charges"
+  label: "Charges"
+}
+
+explore: cashbird_invoice {
+  group_label: "Finance V2"
+  view_label: "Invoice"
+  label: "Invoice"
+  hidden: yes
+}
+
+explore: subscription_session {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "Subscription Sessions"
+  label: "Subscription Sessions"
+}
+
+explore: dim_order_details {
+  group_label: "Finance V2"
+  view_label: "Order Details"
+  label: "Order Details"
+}
+
+explore: recurly_refunds {
+  group_label: "Finance V2"
+  view_label: "Recurly Refunds"
+  label: "Recurly Refunds"
+}
+
+explore: charge_item_order_details {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "Order Details (charge items)"
+  label: "Order Details (charge items)"
+}
+
+explore: line_item_flags {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "Line Item Flags"
+  label: "Line Item Flags"
+}
+
+explore: account {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "Users"
+  label: "Users"
+}
+
+explore: m_snowplow_event {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "Snowplow Event"
+  label: "Snowplow Event"
+}
+
+explore: charge_crm_utm_last_touch {
+  hidden: yes
+  group_label: "Finance V2"
+  view_label: "CRM UTMs"
+  label: "CRM UTMs"
+}
+
+explore: charge_item {
+  group_label: "Finance V2"
+  view_label: "Charge Items"
+  label: "Charge Items (V2)"
+  description: "Charge Items (Scentbird only)"
+
+  always_join: [charge]
+
+  always_filter: {
+    filters: [charge.status: "SUCCESS"]
+  }
+
+  sql_always_where: ${charge_id} is not null ;;
+
+  join: charge_item_order_details {
+    view_label: "Charge Items"
+    fields: [charge_item_order_details.ecommerce_type, charge_item_order_details.is_drift_starter_set, charge_item_order_details.order_product_type]
+    type: left_outer
+    sql_on: ${charge_item.id} = ${charge_item_order_details.line_item_id} ;;
+    relationship: one_to_one
+  }
+
+  join: dim_trading_item {
+    view_label: "Product Details"
+    type: left_outer
+    sql_on: ${charge_item.product_type} in ('ECOMMERCE_PURCHASE', 'ACADEMY_COURSE_KIT') and ${charge_item.product_code} = ${dim_trading_item.sku} ;;
+    relationship: one_to_one
+    fields: [
+      dim_trading_item.brand,
+      dim_trading_item.product_name,
+      dim_trading_item.is_clean,
+      dim_trading_item.is_direct_brand,
+      dim_trading_item.is_in_drift_started_set,
+      dim_trading_item.is_niche,
+      dim_trading_item.is_saks_selected,
+      dim_trading_item.is_sample,
+      dim_trading_item.is_the_edit,
+      dim_trading_item.is_tossin,
+      dim_trading_item.limited_edition,
+      dim_trading_item.product_type,
+      dim_trading_item.sku,
+      dim_trading_item.upcharge_price,
+      dim_trading_item.volume,
+      dim_trading_item.sex
+    ]
+  }
+
+  join: charge {
+    view_label: "Charges"
+    type: left_outer
+    sql_on: ${charge_item.invoice_recurly_id} = ${charge.cashbird_invoice_id} ;;
+    relationship: many_to_one
+  }
+
+  join: cashbird_invoice {
+    view_label: "Charges"
+    type: left_outer
+    sql_on: ${charge_item.invoice_recurly_id} = ${cashbird_invoice.recurly_id} ;;
+    relationship: many_to_one
+    fields: [cashbird_invoice.payment_method_formatted]
+  }
+
+  join: recurly_refunds {
+    view_label: "Refunds"
+    type: left_outer
+    sql_on: ${charge_item.invoice_recurly_id} = ${recurly_refunds.invoice_recurly_id} ;;
+    relationship: many_to_one
+  }
+
+  join: line_item_flags {
+    view_label: "Line Item Flags"
+    type: left_outer
+    sql_on: ${charge_item.id} = ${line_item_flags.line_item_id} ;;
+    relationship: many_to_one
+  }
+
+  join: dim_user {
+    view_label: "User"
+    type: left_outer
+    sql_on: ${charge_item.user_id} = ${dim_user.id} ;;
+    relationship: many_to_one
+  }
+
+  join: m_snowplow_event {
+    view_label: "Charge Items"
+    fields: [m_snowplow_event.offers]
+    type: left_outer
+    sql_on: ${charge_item_order_details.order_id} = ${m_snowplow_event.order_id} ;;
+    relationship: one_to_one
+  }
+
+  join: charge_crm_utm_last_touch {
+    view_label: "CRM Channel Last Touch"
+    type: left_outer
+    sql_on: ${charge_item.charge_id} = ${charge_crm_utm_last_touch.charge_id} ;;
+    relationship: many_to_one
+  }
+}
+
+explore: daily_item_balance {
+  group_label: "Finance V2"
+  view_label: "Daily Item Balance"
+}
